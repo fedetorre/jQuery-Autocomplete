@@ -1,11 +1,11 @@
 /**
- *  Ajax Autocomplete for jQuery, version 1.2.7
- *  (c) 2013 Tomas Kirda
- *
- *  Ajax Autocomplete for jQuery is freely distributable under the terms of an MIT-style license.
- *  For details, see the web site: http://www.devbridge.com/projects/autocomplete/jquery/
- *
- */
+*  Ajax Autocomplete for jQuery, version 1.2.9
+*  (c) 2013 Tomas Kirda
+*
+*  Ajax Autocomplete for jQuery is freely distributable under the terms of an MIT-style license.
+*  For details, see the web site: https://github.com/devbridge/jQuery-Autocomplete
+*
+*/
 
 /*jslint  browser: true, white: true, plusplus: true */
 /*global define, window, document, jQuery */
@@ -29,10 +29,12 @@
                 escapeRegExChars: function (value) {
                     return value.replace(/[\-\[\]\/\{\}\(\)\*\+\?\.\\\^\$\|]/g, "\\$&");
                 },
-                createNode: function (html) {
+                createNode: function (containerClass) {
                     var div = document.createElement('div');
-                    div.innerHTML = html;
-                    return div.firstChild;
+                    div.className = containerClass;
+                    div.style.position = 'absolute';
+                    div.style.display = 'none';
+                    return div;
                 }
             };
         }()),
@@ -68,10 +70,12 @@
                 noCache: false,
                 onSearchStart: noop,
                 onSearchComplete: noop,
+                onSearchError: noop,
                 containerClass: 'autocomplete-suggestions',
                 tabDisabled: false,
                 dataType: 'text',
                 currentRequest: null,
+                triggerSelectOnValidInput: true,
                 lookupFilter: function (suggestion, originalQuery, queryLowerCase) {
                     return suggestion.value.toLowerCase().indexOf(queryLowerCase) !== -1;
                 },
@@ -89,7 +93,7 @@
         that.selectedIndex = -1;
         that.currentValue = that.element.value;
         that.intervalId = 0;
-        that.cachedResponse = [];
+        that.cachedResponse = {};
         that.onChangeInterval = null;
         that.onChange = null;
         that.isLocal = false;
@@ -139,7 +143,7 @@
                 }
             };
 
-            that.suggestionsContainer = Autocomplete.utils.createNode('<div class="' + options.containerClass + '" style="position: absolute; display: none;"></div>');
+            that.suggestionsContainer = Autocomplete.utils.createNode(options.containerClass);
 
             container = $(that.suggestionsContainer);
 
@@ -174,13 +178,21 @@
                 }
             };
 
-            $(window).on('resize', that.fixPositionCapture);
+            $(window).on('resize.autocomplete', that.fixPositionCapture);
 
             that.el.on('keydown.autocomplete', function (e) { that.onKeyPress(e); });
             that.el.on('keyup.autocomplete', function (e) { that.onKeyUp(e); });
             that.el.on('blur.autocomplete', function () { that.onBlur(); });
-            that.el.on('focus.autocomplete', function () { that.fixPosition(); });
+            that.el.on('focus.autocomplete', function () { that.onFocus(); });
             that.el.on('change.autocomplete', function (e) { that.onKeyUp(e); });
+        },
+
+        onFocus: function () {
+            var that = this;
+            that.fixPosition();
+            if (that.options.minChars <= that.el.val().length) {
+                that.onValueChange();
+            }
         },
 
         onBlur: function () {
@@ -208,7 +220,7 @@
         },
 
         clearCache: function () {
-            this.cachedResponse = [];
+            this.cachedResponse = {};
             this.badQueries = [];
         },
 
@@ -219,10 +231,10 @@
         },
 
         disable: function () {
-            this.disabled = true;
-            clearInterval(this.onChangeInterval);
-            if(this.currentRequest){
-                this.currentRequest.abort();
+            var that = this;
+            that.disabled = true;
+            if (that.currentRequest) {
+                that.currentRequest.abort();
             }
         },
 
@@ -232,7 +244,8 @@
 
         fixPosition: function () {
             var that = this,
-                offset;
+                offset,
+                styles;
 
             // Don't adjsut position if custom container has been specified:
             if (that.options.appendTo !== 'body') {
@@ -241,10 +254,16 @@
 
             offset = that.el.offset();
 
-            $(that.suggestionsContainer).css({
+            styles = {
                 top: (offset.top + that.el.outerHeight()) + 'px',
                 left: offset.left + 'px'
-            });
+            };
+
+            if (that.options.width === 'auto') {
+                styles.width = (that.el.outerWidth() - 2) + 'px';
+            }
+
+            $(that.suggestionsContainer).css(styles);
         },
 
         enableKillerFn: function () {
@@ -263,7 +282,7 @@
             that.intervalId = window.setInterval(function () {
                 that.hide();
                 that.stopKillSuggestions();
-            }, 300);
+            }, 50);
         },
 
         stopKillSuggestions: function () {
@@ -371,23 +390,48 @@
 
         onValueChange: function () {
             var that = this,
-                q;
+                options = that.options,
+                value = that.el.val(),
+                query = that.getQuery(value),
+                index;
             if (that.selection) {
                 that.selection = null;
-                (that.options.onInvalidateSelection || $.noop)();
+                (options.onInvalidateSelection || $.noop).call(that.element);
             }
 
             clearInterval(that.onChangeInterval);
-            that.currentValue = that.el.val();
-
-            q = that.getQuery(that.currentValue);
+            that.currentValue = value;
             that.selectedIndex = -1;
 
-            if (q.length < that.options.minChars) {
+            // Check existing suggestion for the match before proceeding:
+            if (options.triggerSelectOnValidInput) {
+                index = that.findSuggestionIndex(query);
+                if (index !== -1) {
+                    that.select(index);
+                    return;
+                }
+            }
+
+            if (query.length < options.minChars) {
                 that.hide();
             } else {
-                that.getSuggestions(q);
+                that.getSuggestions(query);
             }
+        },
+
+        findSuggestionIndex: function (query) {
+            var that = this,
+                index = -1,
+                queryLowerCase = query.toLowerCase();
+
+            $.each(that.suggestions, function (i, suggestion) {
+                if (suggestion.value.toLowerCase() === queryLowerCase) {
+                    index = i;
+                    return false;
+                }
+            });
+
+            return index;
         },
 
         getQuery: function (value) {
@@ -395,7 +439,7 @@
                 parts;
 
             if (!delimiter) {
-                return $.trim(value);
+                return value;
             }
             parts = value.split(delimiter);
             return $.trim(parts[parts.length - 1]);
@@ -403,47 +447,68 @@
 
         getSuggestionsLocal: function (query) {
             var that = this,
+                options = that.options,
                 queryLowerCase = query.toLowerCase(),
-                filter = that.options.lookupFilter;
+                filter = options.lookupFilter,
+                limit = parseInt(options.lookupLimit, 10),
+                data;
 
-            return {
-                suggestions: $.grep(that.options.lookup, function (suggestion) {
+            data = {
+                suggestions: $.grep(options.lookup, function (suggestion) {
                     return filter(suggestion, query, queryLowerCase);
                 })
             };
+
+            if (limit && data.suggestions.length > limit) {
+                data.suggestions = data.suggestions.slice(0, limit);
+            }
+
+            return data;
         },
 
         getSuggestions: function (q) {
             var response,
                 that = this,
                 options = that.options,
-                serviceUrl = options.serviceUrl;
+                serviceUrl = options.serviceUrl,
+                data,
+                cacheKey;
 
-            response = that.isLocal ? that.getSuggestionsLocal(q) : that.cachedResponse[q];
+            options.params[options.paramName] = q;
+            data = options.ignoreParams ? null : options.params;
+
+            if (that.isLocal) {
+                response = that.getSuggestionsLocal(q);
+            } else {
+                if ($.isFunction(serviceUrl)) {
+                    serviceUrl = serviceUrl.call(that.element, q);
+                }
+                cacheKey = serviceUrl + '?' + $.param(data || {});
+                response = that.cachedResponse[cacheKey];
+            }
 
             if (response && $.isArray(response.suggestions)) {
                 that.suggestions = response.suggestions;
                 that.suggest();
             } else if (!that.isBadQuery(q)) {
-                options.params[options.paramName] = q;
                 if (options.onSearchStart.call(that.element, options.params) === false) {
                     return;
                 }
-                if ($.isFunction(options.serviceUrl)) {
-                    serviceUrl = options.serviceUrl.call(that.element, q);
+                if (that.currentRequest) {
+                    that.currentRequest.abort();
                 }
-                if(this.currentRequest != null) {
-                    this.currentRequest.abort();
-                }
-                this.currentRequest = $.ajax({
+                that.currentRequest = $.ajax({
                     url: serviceUrl,
-                    data: options.ignoreParams ? null : options.params,
+                    data: data,
                     type: options.type,
                     dataType: options.dataType
                 }).done(function (data) {
-                        that.processResponse(data, q);
-                        options.onSearchComplete.call(that.element, q);
-                    });
+                    that.currentRequest = null;
+                    that.processResponse(data, q, cacheKey);
+                    options.onSearchComplete.call(that.element, q);
+                }).fail(function (jqXHR, textStatus, errorThrown) {
+                    options.onSearchError.call(that.element, q, jqXHR, textStatus, errorThrown);
+                });
             }
         },
 
@@ -475,13 +540,24 @@
             }
 
             var that = this,
-                formatResult = that.options.formatResult,
+                options = that.options,
+                formatResult = options.formatResult,
                 value = that.getQuery(that.currentValue),
                 className = that.classes.suggestion,
                 classSelected = that.classes.selected,
                 container = $(that.suggestionsContainer),
+                beforeRender = options.beforeRender,
                 html = '',
+                index,
                 width;
+
+            if (options.triggerSelectOnValidInput) {
+                index = that.findSuggestionIndex(value);
+                if (index !== -1) {
+                    that.select(index);
+                    return;
+                }
+            }
 
             // Build suggestions inner HTML:
             $.each(that.suggestions, function (i, suggestion) {
@@ -492,19 +568,25 @@
             // because if instance was created before input had width, it will be zero.
             // Also it adjusts if input width has changed.
             // -2px to account for suggestions border.
-            if (that.options.width === 'auto') {
+            if (options.width === 'auto') {
                 width = that.el.outerWidth() - 2;
                 container.width(width > 0 ? width : 300);
             }
 
-            container.html(html).show();
-            that.visible = true;
+            container.html(html);
 
             // Select first value by default:
-            if (that.options.autoSelectFirst) {
+            if (options.autoSelectFirst) {
                 that.selectedIndex = 0;
                 container.children().first().addClass(classSelected);
             }
+
+            if ($.isFunction(beforeRender)) {
+                beforeRender.call(that.element, container);
+            }
+
+            container.show();
+            that.visible = true;
 
             that.findBestHint();
         },
@@ -553,7 +635,7 @@
             return suggestions;
         },
 
-        processResponse: function (response, originalQuery) {
+        processResponse: function (response, originalQuery, cacheKey) {
             var that = this,
                 options = that.options,
                 result = options.transformResult(response, originalQuery);
@@ -562,17 +644,19 @@
 
             // Cache results if cache is not disabled:
             if (!options.noCache) {
-                that.cachedResponse[result[options.paramName]] = result;
+                that.cachedResponse[cacheKey] = result;
                 if (result.suggestions.length === 0) {
-                    that.badQueries.push(result[options.paramName]);
+                    that.badQueries.push(cacheKey);
                 }
             }
 
-            // Display suggestions only if returned query matches current value:
-            if (originalQuery === that.getQuery(that.currentValue)) {
-                that.suggestions = result.suggestions;
-                that.suggest();
+            // Return if originalQuery is not matching current query:
+            if (originalQuery !== that.getQuery(that.currentValue)) {
+                return;
             }
+
+            that.suggestions = result.suggestions;
+            that.suggest();
         },
 
         activate: function (index) {
@@ -702,7 +786,7 @@
             var that = this;
             that.el.off('.autocomplete').removeData('autocomplete');
             that.disableKillerFn();
-            $(window).off('resize', that.fixPositionCapture);
+            $(window).off('resize.autocomplete', that.fixPositionCapture);
             $(that.suggestionsContainer).remove();
         }
     };

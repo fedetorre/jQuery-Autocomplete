@@ -66,14 +66,15 @@ describe('Autocomplete', function () {
             context,
             value,
             data,
-            autocomplete = new $.Autocomplete(input, {
+            autocomplete = $(input).autocomplete({
                 lookup: [{ value: 'A', data: 'B' }],
+                triggerSelectOnValidInput: false,
                 onSelect: function (suggestion) {
                     context = this;
                     value = suggestion.value;
                     data = suggestion.data;
                 }
-            });
+            }).autocomplete();
 
         input.value = 'A';
         autocomplete.onValueChange();
@@ -171,6 +172,41 @@ describe('Autocomplete', function () {
         });
     });
 
+    it('Should execute onSearchError', function () {
+        var input = document.createElement('input'),
+            ajaxExecuted = false,
+            errorMessage = false,
+            url = '/test-error',
+            autocomplete = new $.Autocomplete(input, {
+                serviceUrl: url,
+                onSearchError: function (q, jqXHR, textStatus, errorThrown) {
+                    errorMessage = jqXHR.responseText;
+                }
+            });
+
+        $.mockjax({
+            url: url,
+            responseTime: 50,
+            status: 500,
+            response: function (settings) {
+                ajaxExecuted = true;
+                this.responseText = "An error occurred";
+            }
+        });
+
+        input.value = 'A';
+        autocomplete.onValueChange();
+
+        waitsFor(function () {
+            return ajaxExecuted;
+        }, 'Ajax call never completed.', 100);
+
+        runs(function () {
+            expect(ajaxExecuted).toBe(true);
+            expect(errorMessage).toBe("An error occurred");
+        });
+    });
+
     it('Should transform results', function () {
         var input = document.createElement('input'),
             ajaxExecuted = false,
@@ -225,7 +261,7 @@ describe('Autocomplete', function () {
                 ajaxExecuted = true;
                 var response = {
                     query: null,
-                    suggestions: ['A', 'B', 'C']
+                    suggestions: ['Aa', 'Bb', 'Cc']
                 };
                 this.responseText = JSON.stringify(response);
             }
@@ -241,7 +277,7 @@ describe('Autocomplete', function () {
         runs(function () {
             expect(ajaxExecuted).toBe(true);
             expect(autocomplete.suggestions.length).toBe(3);
-            expect(autocomplete.suggestions[0].value).toBe('A');
+            expect(autocomplete.suggestions[0].value).toBe('Aa');
         });
     });
 
@@ -437,5 +473,128 @@ describe('Autocomplete', function () {
         width = $(instance.suggestionsContainer).width();
 
         expect(width).toBeGreaterThan(0);
+    });
+
+    it('Should call beforeRender and pass container jQuery object', function () {
+        var element = document.createElement('input'),
+            input = $(element),
+            instance,
+            elementCount,
+            context;
+
+        input.autocomplete({
+            lookup: [{ value: 'Jamaica', data: 'B' }],
+            beforeRender: function (container) {
+                context = this;
+                elementCount = container.length;
+            }
+        });
+
+        input.val('Jam');
+        instance = input.autocomplete();
+        instance.onValueChange();
+
+        expect(context).toBe(element);
+        expect(elementCount).toBe(1);
+    });
+
+    it('Should trigger select when input value matches suggestion', function () {
+        var input = $('<input />'),
+            instance,
+            suggestionData = false;
+
+        input.autocomplete({
+            lookup: [{ value: 'Jamaica', data: 'J' }],
+            triggerSelectOnValidInput: true,
+            onSelect: function (suggestion) {
+                suggestionData = suggestion.data;
+            }
+        });
+
+        input.val('Jamaica');
+        instance = input.autocomplete();
+        instance.onValueChange();
+
+        expect(suggestionData).toBe('J');
+    });
+
+    it('Should NOT trigger select when input value matches suggestion', function () {
+        var input = $('<input />'),
+            instance,
+            suggestionData = null;
+
+        input.autocomplete({
+            lookup: [{ value: 'Jamaica', data: 'J' }],
+            triggerSelectOnValidInput: false,
+            onSelect: function (suggestion) {
+                suggestionData = suggestion.data;
+            }
+        });
+
+        input.val('Jamaica');
+        instance = input.autocomplete();
+        instance.onValueChange();
+
+        expect(suggestionData).toBeNull();
+    });
+
+    it('Should use serviceUrl and params as cacheKey', function () {
+        var input = $('<input />'),
+            instance,
+            ajaxExecuted = false,
+            data = { a: 1, query: 'Jam' },
+            serviceUrl = '/autocomplete/cached/url',
+            cacheKey = serviceUrl + '?' + $.param(data);
+
+        input.autocomplete({
+            serviceUrl: serviceUrl,
+            params: data
+        });
+
+        $.mockjax({
+            url: serviceUrl,
+            responseTime: 5,
+            response: function (settings) {
+                ajaxExecuted = true;
+                var query = settings.data.query,
+                    response = {
+                        suggestions: [{ value: 'Jamaica' }, { value: 'Jamaica' }]
+                    };
+                this.responseText = JSON.stringify(response);
+            }
+        });
+
+        input.val('Jam');
+        instance = input.autocomplete();
+        instance.onValueChange();
+
+        waits(10);
+
+        runs(function () {
+            expect(instance.cachedResponse[cacheKey]).toBeTruthy();
+        });
+    });
+
+    it('Should limit results for local request', function () {
+        var input = $('<input />'),
+            instance,
+            limit = 3;
+
+        input.autocomplete({
+            lookup: [{ value: 'Jamaica' }, { value: 'Jamaica' }, { value: 'Jamaica' }, { value: 'Jamaica' }, { value: 'Jamaica' }]
+        });
+
+        input.val('Jam');
+        instance = input.autocomplete();
+        instance.onValueChange();
+
+        // Expect all items to be displayed:
+        expect(instance.suggestions.length).toBe(5);
+
+        // Set lookup result limit and verify:
+        instance.setOptions({ lookupLimit: limit });
+        instance.onValueChange();
+
+        expect(instance.suggestions.length).toBe(limit);
     });
 });
