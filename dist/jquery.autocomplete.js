@@ -233,6 +233,7 @@
         disable: function () {
             var that = this;
             that.disabled = true;
+            clearInterval(this.onChangeInterval);
             if (that.currentRequest) {
                 that.currentRequest.abort();
             }
